@@ -10,33 +10,65 @@ export interface RevenueMetricsSummary {
   crossSellRevenueINR: number;
   cartAbandonmentRate: number;
   opportunityCount: number;
+  // Calculated from real DB data — current 30d vs previous 30d
+  revenueGrowthPercent: number | null;
+  upsellGrowthPercent: number | null;
 }
 
 export async function computeMerchantAnalytics(merchantId: string = "merchant_default_rzg"): Promise<RevenueMetricsSummary> {
-  const orders = await db.order.findMany({
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const sixtyDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+
+  const allPaidOrders = await db.order.findMany({
     where: { merchantId, status: "PAID" },
     include: { items: true },
   });
 
-  const totalRevenueINR = orders.reduce((sum, o) => sum + o.total, 0);
-  const totalOrdersCount = orders.length;
+  // Split into current period (last 30 days) and previous period (31-60 days ago)
+  const currentPeriodOrders = allPaidOrders.filter((o) => new Date(o.createdAt) >= thirtyDaysAgo);
+  const previousPeriodOrders = allPaidOrders.filter(
+    (o) => new Date(o.createdAt) >= sixtyDaysAgo && new Date(o.createdAt) < thirtyDaysAgo
+  );
+
+  const totalRevenueINR = allPaidOrders.reduce((sum, o) => sum + o.total, 0);
+  const totalOrdersCount = allPaidOrders.length;
   const avgOrderValueINR = totalOrdersCount > 0 ? totalRevenueINR / totalOrdersCount : 0;
 
-  const aiOrders = orders.filter((o) => o.aiAttributed);
+  const aiOrders = allPaidOrders.filter((o) => o.aiAttributed);
   const aiAttributedRevenueINR = aiOrders.reduce((sum, o) => sum + o.aiRevenueAmount, 0);
   const aiAttributedPercent = totalRevenueINR > 0 ? (aiAttributedRevenueINR / totalRevenueINR) * 100 : 0;
 
-  const upsellRevenueINR = orders
-    .filter((o) => o.aiAttributionType === "UPSELL")
-    .reduce((sum, o) => sum + o.aiRevenueAmount, 0);
-
-  const crossSellRevenueINR = orders
+  const upsellOrders = allPaidOrders.filter((o) => o.aiAttributionType === "UPSELL");
+  const upsellRevenueINR = upsellOrders.reduce((sum, o) => sum + o.aiRevenueAmount, 0);
+  const crossSellRevenueINR = allPaidOrders
     .filter((o) => o.aiAttributionType === "CROSS_SELL")
     .reduce((sum, o) => sum + o.aiRevenueAmount, 0);
 
+  // Period-over-period growth — real calculation from DB dates
+  const currentRevenue = currentPeriodOrders.reduce((sum, o) => sum + o.total, 0);
+  const previousRevenue = previousPeriodOrders.reduce((sum, o) => sum + o.total, 0);
+  const revenueGrowthPercent =
+    previousRevenue > 0
+      ? Number((((currentRevenue - previousRevenue) / previousRevenue) * 100).toFixed(1))
+      : null; // null = insufficient history, don't show a fake number
+
+  const currentUpsellRevenue = currentPeriodOrders
+    .filter((o) => o.aiAttributionType === "UPSELL")
+    .reduce((sum, o) => sum + o.aiRevenueAmount, 0);
+  const previousUpsellRevenue = previousPeriodOrders
+    .filter((o) => o.aiAttributionType === "UPSELL")
+    .reduce((sum, o) => sum + o.aiRevenueAmount, 0);
+  const upsellGrowthPercent =
+    previousUpsellRevenue > 0
+      ? Number((((currentUpsellRevenue - previousUpsellRevenue) / previousUpsellRevenue) * 100).toFixed(1))
+      : null;
+
+  // Cart abandonment — computed from real cart statuses in DB
   const totalCarts = await db.cart.count();
   const abandonedCarts = await db.cart.count({ where: { status: "ABANDONED" } });
-  const cartAbandonmentRate = totalCarts > 0 ? (abandonedCarts / totalCarts) * 100 : 28.5;
+  // Only compute rate when we have data; never hardcode a fallback percentage
+  const cartAbandonmentRate = totalCarts > 0 ? Number(((abandonedCarts / totalCarts) * 100).toFixed(1)) : 0;
 
   const opportunityCount = await db.opportunity.count({
     where: { merchantId, status: "PENDING" },
@@ -50,8 +82,10 @@ export async function computeMerchantAnalytics(merchantId: string = "merchant_de
     aiAttributedPercent: Number(aiAttributedPercent.toFixed(1)),
     upsellRevenueINR,
     crossSellRevenueINR,
-    cartAbandonmentRate: Number(cartAbandonmentRate.toFixed(1)),
+    cartAbandonmentRate,
     opportunityCount,
+    revenueGrowthPercent,
+    upsellGrowthPercent,
   };
 }
 

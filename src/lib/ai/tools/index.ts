@@ -466,10 +466,42 @@ export async function createPaymentOrderTool(args: z.infer<typeof createPaymentO
 
   // 5. Freeze prices deterministically from database
   const subtotal = activeCart.items.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
-  const total = subtotal - (activeCart.discount || 0);
 
-  // 6. Policy Check
-  const policyCheck = await validateOrderPolicy("merchant_default_rzg", total, activeCart.discount, subtotal);
+  // 5b. Apply promotional discount if an APPROVED opportunity covers any cart item
+  //     — server-side only, never trusted from client. LLM cannot override this.
+  let promoDiscount = 0;
+  let promoDescription: string | null = null;
+  const cartSkus = activeCart.items.map((i) => i.product?.sku ?? "");
+  if (cartSkus.length > 0) {
+    const approvedOpps = await db.opportunity.findMany({
+      where: { merchantId: "merchant_default_rzg", status: "APPROVED" },
+    });
+    for (const opp of approvedOpps) {
+      const payload = JSON.parse(opp.actionPayload || "{}");
+      const triggerSku: string = payload.triggerProductSku ?? "";
+      if (triggerSku && cartSkus.includes(triggerSku)) {
+        const suggestSku: string = payload.suggestProductSku ?? "";
+        // Discount applies only when the suggested companion product is ALSO in the cart
+        if (suggestSku && cartSkus.includes(suggestSku)) {
+          const discountPercent: number = Math.min(payload.discountPercent ?? 0, 25); // never trust >25% raw
+          const maxDiscountINR: number = payload.maxDiscountINR ?? Infinity;
+          const triggerItem = activeCart.items.find((i) => i.product?.sku === triggerSku || i.product?.sku === suggestSku);
+          const discountBase = triggerItem ? triggerItem.product.price : 0;
+          const rawDiscount = Math.round(discountBase * (discountPercent / 100));
+          const cappedDiscount = Math.min(rawDiscount, maxDiscountINR);
+          if (cappedDiscount > promoDiscount) {
+            promoDiscount = cappedDiscount;
+            promoDescription = `Merchant-approved ${discountPercent}% attach promotion (${opp.title})`;
+          }
+        }
+      }
+    }
+  }
+
+  const total = Math.max(0, subtotal - promoDiscount);
+
+  // 6. Policy Check — validates total, discount%, transaction ceiling (server-side)
+  const policyCheck = await validateOrderPolicy("merchant_default_rzg", total, promoDiscount, subtotal);
   if (!policyCheck.allowed) {
     await logAuditEvent({
       actor: "SYSTEM",
@@ -682,6 +714,7 @@ export async function createPaymentOrderTool(args: z.infer<typeof createPaymentO
         customerId: customer.id,
         cartId: activeCart.id,
         subtotal,
+        discount: promoDiscount,
         total,
         currency: "INR",
         status: "PAYMENT_INITIATED",
@@ -743,6 +776,9 @@ export async function createPaymentOrderTool(args: z.infer<typeof createPaymentO
     orderId: order.id,
     orderNumber: order.orderNumber,
     razorpayOrderId: rzpRes.order.id,
+    subtotalInINR: subtotal,
+    discountINR: promoDiscount,
+    promoDescription: promoDescription ?? undefined,
     amountInINR: total,
     amountInPaise: Math.round(total * 100),
     currency: "INR",
@@ -759,7 +795,7 @@ export async function createPaymentOrderTool(args: z.infer<typeof createPaymentO
     orderId: order.id,
     action: "ORDER_CREATED:RAZORPAY_INITIATED",
     toolName: "create_payment_order",
-    inputState: { orderNumber, total, idempotencyKey },
+    inputState: { orderNumber, subtotal, discountINR: promoDiscount, total, idempotencyKey, promoDescription },
     outputState: responsePayload,
     decision: "ALLOWED",
     riskScore: 0.05,

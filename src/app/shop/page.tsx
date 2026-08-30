@@ -669,7 +669,11 @@ export default function ShopPage() {
                   <span className="font-semibold">{formatINR(it.totalPrice)}</span>
                 </div>
               ))}
-              <div className="pt-2 border-t border-slate-200 flex justify-between font-bold text-sm text-slate-900">
+              <div className="pt-2 border-t border-slate-200 flex justify-between text-slate-500">
+                <span>Subtotal</span>
+                <span>{formatINR(cart.subtotal)}</span>
+              </div>
+              <div className="flex justify-between font-bold text-sm text-slate-900">
                 <span>Total Amount to Pay</span>
                 <span className="text-blue-600">{formatINR(cart.total)}</span>
               </div>

@@ -25,17 +25,24 @@ export async function processFallbackAgent(
   const lower = userMessage.toLowerCase();
   const toolCalls: Array<{ name: string; args: any; result: any }> = [];
 
-  // Extract budget mentions (e.g., "70000", "70,000", "50k", "50000")
+  // Extract budget mentions — handles all formats:
+  //   "under ₹800"   → 800      "under 8000"  → 8000
+  //   "under 70k"    → 70000    "under ₹70,000" → 70000
+  //   "budget 1,500" → 1500     "within 50 thousand" → 50000
+  // Regex tries comma-formatted number FIRST (requires at least one comma group),
+  // then falls back to a plain integer (\d+). This prevents 8000 → 800.
   let extractedBudget: number | undefined;
-  const budgetMatch = lower.match(/(?:under|below|budget|within|upto)\s*(?:₹|rs\.?|inr)?\s*(\d{1,3}(?:,\d{3})*|\d+)(?:k)?/i);
+  const budgetMatch = lower.match(
+    /(?:under|below|budget|within|upto|up\s*to)\s*(?:₹|rs\.?|inr)?\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(k|thousand)?/i
+  );
   if (budgetMatch) {
-    let numStr = budgetMatch[1].replace(/,/g, "");
+    const numStr = budgetMatch[1].replace(/,/g, "");
     let val = parseFloat(numStr);
-    if (lower.includes(`${budgetMatch[1]}k`) || lower.includes(`${val}k`)) {
-      val = val * 1000;
+    const suffix = (budgetMatch[2] ?? "").toLowerCase();
+    if (suffix === "k" || suffix === "thousand") {
+      val = val * 1000; // "70k" → 70,000 / "50 thousand" → 50,000
     }
-    if (val < 1000) val = val * 1000; // e.g. "70k" -> 70 -> 70000
-    extractedBudget = val;
+    if (val > 0) extractedBudget = val;
   }
 
   // 1. Checkout / Confirmation intent

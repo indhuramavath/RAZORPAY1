@@ -483,7 +483,7 @@ async function main() {
   const mon4k = await prisma.product.findUnique({ where: { sku: "MON-4K-27" } });
   const tbDock = await prisma.product.findUnique({ where: { sku: "ACC-DOCK-TB4" } });
 
-  // Generate 25 historical settled orders
+  // --- Current period orders (last 30 days) — 4 orders ---
   const sampleOrders = [
     {
       customerIndex: 0,
@@ -537,6 +537,45 @@ async function main() {
       status: "PAID",
       confirmed: true,
       daysAgo: 3,
+    },
+    // --- Previous period orders (31-60 days ago) — for real period-over-period growth calculation ---
+    {
+      customerIndex: 0,
+      items: [
+        { product: devLaptop!, qty: 1, isUpsell: false },
+        { product: mechKb!, qty: 1, isUpsell: true },
+      ],
+      aiAttributed: true,
+      aiType: "UPSELL",
+      aiAmount: 6499,
+      status: "PAID",
+      confirmed: true,
+      daysAgo: 38,
+    },
+    {
+      customerIndex: 2,
+      items: [
+        { product: mon4k!, qty: 1, isUpsell: false },
+      ],
+      aiAttributed: false,
+      aiType: "DIRECT_DISCOVERY",
+      aiAmount: 0,
+      status: "PAID",
+      confirmed: true,
+      daysAgo: 45,
+    },
+    {
+      customerIndex: 1,
+      items: [
+        { product: mechKb!, qty: 1, isUpsell: false },
+        { product: ergoMouse!, qty: 1, isUpsell: false },
+      ],
+      aiAttributed: false,
+      aiType: "DIRECT_DISCOVERY",
+      aiAmount: 0,
+      status: "PAID",
+      confirmed: true,
+      daysAgo: 52,
     },
   ];
 
@@ -644,6 +683,90 @@ async function main() {
   }
 
   console.log("✓ Seeded historical settled orders & audit traces");
+
+  // 4b. Seed abandoned carts — required for real cart abandonment rate metric
+  // 3 abandoned carts out of total ~10 carts = ~30% abandonment rate
+  const studentLaptop = await prisma.product.findUnique({ where: { sku: "LAP-STUDENT-AIR-13" } });
+  const ankerHub = await prisma.product.findUnique({ where: { sku: "ACC-HUB-7IN1" } });
+
+  const abandonedCartsData = [
+    {
+      customer: createdCustomers[1], // Rohit Verma — student
+      items: [{ product: studentLaptop!, qty: 1 }],
+      daysAgo: 8,
+      reason: "Price barrier at ₹42,999 checkout",
+    },
+    {
+      customer: createdCustomers[3], // Karthik — accessories buyer
+      items: [
+        { product: mechKb!, qty: 1 },
+        { product: ankerHub!, qty: 1 },
+      ],
+      daysAgo: 18,
+      reason: "Dropped off at ORDER_REVIEW step",
+    },
+    {
+      customer: createdCustomers[1], // Rohit — second attempt, also abandoned
+      items: [{ product: ankerHub!, qty: 1 }],
+      daysAgo: 25,
+      reason: "Session expired before payment confirmation",
+    },
+  ];
+
+  for (let i = 0; i < abandonedCartsData.length; i++) {
+    const aData = abandonedCartsData[i];
+    const abandonDate = new Date();
+    abandonDate.setDate(abandonDate.getDate() - aData.daysAgo);
+    const subtotalAbandoned = aData.items.reduce((sum, it) => sum + it.product.price * it.qty, 0);
+
+    const abandonedSession = await prisma.session.create({
+      data: {
+        customerId: aData.customer.id,
+        sessionToken: `sess_abandoned_${i}_${Date.now()}`,
+        state: "ORDER_REVIEW",
+        createdAt: abandonDate,
+      },
+    });
+
+    await prisma.cart.create({
+      data: {
+        sessionId: abandonedSession.id,
+        customerId: aData.customer.id,
+        status: "ABANDONED",
+        subtotal: subtotalAbandoned,
+        total: subtotalAbandoned,
+        createdAt: abandonDate,
+        items: {
+          create: aData.items.map((it) => ({
+            productId: it.product.id,
+            quantity: it.qty,
+            unitPrice: it.product.price,
+            totalPrice: it.product.price * it.qty,
+            isUpsell: false,
+            addedVia: "DIRECT",
+          })),
+        },
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        merchantId: merchant.id,
+        actor: "SYSTEM",
+        actorType: "WORKER",
+        sessionId: abandonedSession.id,
+        action: "CART_ABANDONED:CHECKOUT_DROPOFF",
+        toolName: "session_monitor",
+        inputState: JSON.stringify({ sessionId: abandonedSession.id, subtotal: subtotalAbandoned }),
+        outputState: JSON.stringify({ reason: aData.reason, cartStatus: "ABANDONED" }),
+        decision: "BLOCKED",
+        riskScore: 0.15,
+        createdAt: abandonDate,
+      },
+    });
+  }
+
+  console.log(`✓ Seeded ${abandonedCartsData.length} abandoned carts for real abandonment rate metric`);
 
   // 5. Pre-Detected AI Revenue Opportunities for Merchant Copilot
   const opportunities = [
