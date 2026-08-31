@@ -251,6 +251,122 @@ export async function ensureDatabaseSeeded() {
       },
     }).catch(() => {});
 
+    // Create customers for order history
+    const customers = await Promise.all([
+      db.customer.upsert({
+        where: { email: "aditi.sharma@techcorp.in" },
+        update: {},
+        create: { name: "Aditi Sharma", email: "aditi.sharma@techcorp.in", segment: "ENTERPRISE" },
+      }),
+      db.customer.upsert({
+        where: { email: "rohit.verma@student.edu.in" },
+        update: {},
+        create: { name: "Rohit Verma", email: "rohit.verma@student.edu.in", segment: "STUDENT" },
+      }),
+      db.customer.upsert({
+        where: { email: "priya.patel@design.studio" },
+        update: {},
+        create: { name: "Priya Patel", email: "priya.patel@design.studio", segment: "CREATIVE" },
+      }),
+    ]).catch(() => []);
+
+    if (customers.length === 3) {
+      const devLaptop  = await db.product.findUnique({ where: { sku: "LAP-DEV-PRO-14" } });
+      const mechKb     = await db.product.findUnique({ where: { sku: "ACC-KB-MECH" } });
+      const ergoMouse  = await db.product.findUnique({ where: { sku: "ACC-MOU-ERGO" } });
+      const mon4k      = await db.product.findUnique({ where: { sku: "MON-4K-27" } });
+      const tbDock     = await db.product.findUnique({ where: { sku: "ACC-DOCK-TB4" } });
+      const ankerHub   = await db.product.findUnique({ where: { sku: "ACC-HUB-7IN1" } });
+
+      if (devLaptop && mechKb && ergoMouse && mon4k && tbDock && ankerHub) {
+        // --- Current period orders (last 30 days) ---
+        const currentOrders = [
+          { customer: customers[0], items: [{ p: devLaptop, qty: 1, upsell: false }, { p: mechKb, qty: 1, upsell: true }, { p: ergoMouse, qty: 1, upsell: true }], aiType: "UPSELL", aiAmount: 14498, daysAgo: 14 },
+          { customer: customers[1], items: [{ p: devLaptop, qty: 1, upsell: false }, { p: mechKb, qty: 1, upsell: true }], aiType: "CROSS_SELL", aiAmount: 6499, daysAgo: 10 },
+          { customer: customers[2], items: [{ p: mon4k, qty: 1, upsell: false }, { p: tbDock, qty: 1, upsell: true }], aiType: "UPSELL", aiAmount: 18999, daysAgo: 7 },
+          { customer: customers[0], items: [{ p: mechKb, qty: 1, upsell: false }, { p: ergoMouse, qty: 1, upsell: true }], aiType: "CROSS_SELL", aiAmount: 7999, daysAgo: 3 },
+          // --- Previous period orders (31-60 days ago) for period-over-period growth ---
+          { customer: customers[0], items: [{ p: devLaptop, qty: 1, upsell: false }, { p: mechKb, qty: 1, upsell: true }], aiType: "UPSELL", aiAmount: 6499, daysAgo: 38 },
+          { customer: customers[2], items: [{ p: mon4k, qty: 1, upsell: false }], aiType: "DIRECT_DISCOVERY", aiAmount: 0, daysAgo: 45 },
+          { customer: customers[1], items: [{ p: mechKb, qty: 1, upsell: false }, { p: ergoMouse, qty: 1, upsell: false }], aiType: "DIRECT_DISCOVERY", aiAmount: 0, daysAgo: 52 },
+        ];
+
+        for (let i = 0; i < currentOrders.length; i++) {
+          const o = currentOrders[i];
+          const orderDate = new Date();
+          orderDate.setDate(orderDate.getDate() - o.daysAgo);
+          const subtotal = o.items.reduce((s, it) => s + it.p.price * it.qty, 0);
+          const orderNumber = `RZG-DEMO-${2000 + i}`;
+          const hasUpsell = o.items.some((it) => it.upsell);
+
+          const orderSession = await db.session.create({
+            data: { customerId: o.customer.id, sessionToken: `seed_order_sess_${i}_${Date.now()}`, state: "CONVERTED", createdAt: orderDate },
+          });
+          const cart = await db.cart.create({
+            data: {
+              sessionId: orderSession.id, customerId: o.customer.id,
+              status: "CONVERTED", subtotal, total: subtotal, createdAt: orderDate,
+              items: { create: o.items.map((it) => ({ productId: it.p.id, quantity: it.qty, unitPrice: it.p.price, totalPrice: it.p.price * it.qty, isUpsell: it.upsell, addedVia: it.upsell ? "AI_RECOMMENDATION" : "DIRECT" })) },
+            },
+          });
+
+          const order = await db.order.create({
+            data: {
+              orderNumber, merchantId: merchant.id, customerId: o.customer.id, cartId: cart.id,
+              subtotal, total: subtotal, currency: "INR", status: "PAID",
+              razorpayOrderId: `order_demo_${2000 + i}`, razorpayPaymentId: `pay_demo_${2000 + i}`,
+              idempotencyKey: `seed_idemp_${2000 + i}`,
+              confirmedByCustomer: true, aiAttributed: hasUpsell,
+              aiAttributionType: o.aiType, aiRevenueAmount: o.aiAmount, createdAt: orderDate,
+              items: { create: o.items.map((it) => ({ productId: it.p.id, quantity: it.qty, unitPrice: it.p.price, totalPrice: it.p.price * it.qty, isUpsell: it.upsell })) },
+            },
+          });
+
+          await db.paymentAttempt.create({
+            data: { orderId: order.id, razorpayOrderId: `order_demo_${2000 + i}`, amount: subtotal, currency: "INR", status: "CAPTURED", idempotencyKey: `seed_pay_${2000 + i}`, capturedAt: orderDate },
+          });
+          await db.auditLog.create({
+            data: {
+              merchantId: merchant.id, actor: "SYSTEM", actorType: "WORKER",
+              sessionId: orderSession.id, orderId: order.id,
+              action: "PAYMENT_VERIFIED:SETTLED", toolName: "verify_payment",
+              inputState: JSON.stringify({ orderNumber, amount: subtotal }),
+              outputState: JSON.stringify({ status: "PAID" }),
+              decision: "ALLOWED", riskScore: 0.02, createdAt: orderDate,
+            },
+          });
+        }
+
+        // --- Abandoned carts for real abandonment rate metric ---
+        const studentLaptop = await db.product.findUnique({ where: { sku: "LAP-STUDENT-AIR-13" } });
+        if (studentLaptop) {
+          const abandonDates = [8, 18, 25];
+          const abandonItems = [
+            [{ p: studentLaptop, qty: 1 }],
+            [{ p: mechKb, qty: 1 }, { p: ankerHub, qty: 1 }],
+            [{ p: ankerHub, qty: 1 }],
+          ];
+          for (let i = 0; i < 3; i++) {
+            const abandonDate = new Date();
+            abandonDate.setDate(abandonDate.getDate() - abandonDates[i]);
+            const sub = abandonItems[i].reduce((s, it) => s + it.p.price * it.qty, 0);
+            const aSess = await db.session.create({
+              data: { customerId: customers[1].id, sessionToken: `seed_abandoned_${i}_${Date.now()}`, state: "ORDER_REVIEW", createdAt: abandonDate },
+            });
+            await db.cart.create({
+              data: {
+                sessionId: aSess.id, customerId: customers[1].id,
+                status: "ABANDONED", subtotal: sub, total: sub, createdAt: abandonDate,
+                items: { create: abandonItems[i].map((it) => ({ productId: it.p.id, quantity: it.qty, unitPrice: it.p.price, totalPrice: it.p.price * it.qty, isUpsell: false, addedVia: "DIRECT" })) },
+              },
+            });
+          }
+        }
+
+        console.log("✓ Auto-seeded historical orders, customers & abandoned carts");
+      }
+    }
+
     isSeeded = true;
     isSeeding = false;
     console.log("✓ Database auto-seeding completed successfully");
