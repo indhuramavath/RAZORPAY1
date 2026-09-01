@@ -256,17 +256,17 @@ export async function ensureDatabaseSeeded() {
       db.customer.upsert({
         where: { email: "aditi.sharma@techcorp.in" },
         update: {},
-        create: { name: "Aditi Sharma", email: "aditi.sharma@techcorp.in", segment: "ENTERPRISE" },
+        create: { name: "Aditi Sharma", email: "aditi.sharma@techcorp.in", segments: JSON.stringify(["ENTERPRISE"]) },
       }),
       db.customer.upsert({
         where: { email: "rohit.verma@student.edu.in" },
         update: {},
-        create: { name: "Rohit Verma", email: "rohit.verma@student.edu.in", segment: "STUDENT" },
+        create: { name: "Rohit Verma", email: "rohit.verma@student.edu.in", segments: JSON.stringify(["STUDENT"]) },
       }),
       db.customer.upsert({
         where: { email: "priya.patel@design.studio" },
         update: {},
-        create: { name: "Priya Patel", email: "priya.patel@design.studio", segment: "CREATIVE" },
+        create: { name: "Priya Patel", email: "priya.patel@design.studio", segments: JSON.stringify(["CREATIVE"]) },
       }),
     ]).catch(() => []);
 
