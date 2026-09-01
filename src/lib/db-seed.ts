@@ -323,7 +323,7 @@ export async function ensureDatabaseSeeded() {
           });
 
           await db.paymentAttempt.create({
-            data: { orderId: order.id, razorpayOrderId: `order_demo_${2000 + i}`, amount: subtotal, currency: "INR", status: "CAPTURED", idempotencyKey: `seed_pay_${2000 + i}`, capturedAt: orderDate },
+            data: { orderId: order.id, razorpayOrderId: `order_demo_${2000 + i}`, amount: subtotal, currency: "INR", status: "CAPTURED", idempotencyKey: `seed_pay_${2000 + i}` },
           });
           await db.auditLog.create({
             data: {
