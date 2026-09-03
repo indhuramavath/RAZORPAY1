@@ -45,7 +45,7 @@ function getDatabaseUrl(): string {
         }
       }
 
-      if (!copied) {
+      if (!copied || fs.statSync(tmpDbPath).size === 0) {
         try {
           fs.writeFileSync(tmpDbPath, "");
         } catch (e) {
